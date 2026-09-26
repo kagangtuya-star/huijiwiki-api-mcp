@@ -28,6 +28,15 @@ export enum LOG_LEVEL {
     NONE = 1000,
 }
 
+export interface EditOptions {
+    isBot?: boolean;
+    summary?: string;
+    baseRevId?: number;
+    createOnly?: boolean;
+    noCreate?: boolean;
+    minor?: boolean;
+}
+
 export class HuijiWiki {
     private prefix: string;
     private csrfToken: string = '';
@@ -163,7 +172,11 @@ export class HuijiWiki {
         }
     }
 
-    private async clientlogin(username: string, password: string): Promise<boolean> {
+    private async clientlogin(
+        username: string,
+        password: string,
+        bootstrapAttempted = false
+    ): Promise<boolean> {
         let loginToken = '';
         {
             const resToken = await this.requester.request<MWResponseQueryTokens>({
@@ -175,6 +188,10 @@ export class HuijiWiki {
         }
         // 检查是否有huiji_session，如果没有则额外执行一次登录
         if (!this.requester.hasHuijiSession()) {
+            if (bootstrapAttempted) {
+                this.error('登录失败：无法建立 huiji_session');
+                return false;
+            }
             await this.requester.request<MWResponseClientLogin>({
                 action: 'clientlogin',
                 username: username,
@@ -183,7 +200,7 @@ export class HuijiWiki {
                 loginreturnurl: `https://${this.prefix}.huijiwiki.com`,
                 rememberMe: '1',
             });
-            return this.clientlogin(username, password);
+            return this.clientlogin(username, password, true);
         }
         const resLogin = await this.requester.request<MWResponseClientLogin>({
             action: 'clientlogin',
@@ -292,7 +309,8 @@ export class HuijiWiki {
     }
 
     async requestWithCsrfToken<T extends MWResponseBase = MWResponseBase>(
-        queryFunc: (csrfToken: string) => Promise<T>
+        queryFunc: (csrfToken: string) => Promise<T>,
+        badTokenRetries = 1
     ): Promise<T> {
         const csrfToken = await this.apiQueryCsrfToken();
         if (csrfToken === '') {
@@ -301,7 +319,7 @@ export class HuijiWiki {
 
         const res = await queryFunc(csrfToken);
 
-        if (res.error && res.error.code === 'badtoken') {
+        if (res.error && res.error.code === 'badtoken' && badTokenRetries > 0) {
             if (!this.requeryToken) {
                 this.requeryToken = true;
                 this.csrfToken = '';
@@ -310,7 +328,7 @@ export class HuijiWiki {
             } else {
                 await sleep(1000);
             }
-            return await this.requestWithCsrfToken(queryFunc);
+            return await this.requestWithCsrfToken(queryFunc, badTokenRetries - 1);
         }
 
         return res;
@@ -328,7 +346,7 @@ export class HuijiWiki {
     async apiEdit(
         title: string,
         text: string,
-        options?: { isBot?: boolean; summary?: string }
+        options?: EditOptions
     ): Promise<MWResponseEdit> {
         options = options || {};
         const isBot = options.isBot ?? true;
@@ -342,6 +360,10 @@ export class HuijiWiki {
                 summary: summary,
                 token: csrfToken,
                 ...(isBot ? { bot: '1' } : {}),
+                ...(options?.baseRevId !== undefined ? { baserevid: options.baseRevId } : {}),
+                ...(options?.createOnly ? { createonly: '1' } : {}),
+                ...(options?.noCreate ? { nocreate: '1' } : {}),
+                ...(options?.minor ? { minor: '1' } : {}),
             });
         };
 
@@ -788,7 +810,7 @@ export class HuijiWiki {
      * @param options 选项
      * @returns API 返回值
      */
-    async editPage(title: string, text: string, options?: { isBot?: boolean; summary?: string }) {
+    async editPage(title: string, text: string, options?: EditOptions) {
         return await this.apiEdit(title, text, options);
     }
 
